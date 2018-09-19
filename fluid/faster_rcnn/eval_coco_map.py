@@ -72,34 +72,111 @@ def eval(args):
         is_train=False,
         use_random=False)
     model.build_model(image_shape)
-    rpn_rois, confs, locs = model.eval_out()
+    rpn_rois, scores, locs = model.eval_out()
+    confs = fluid.layers.softmax(scores, use_cudnn=False)
     place = fluid.CUDAPlace(0) if args.use_gpu else fluid.CPUPlace()
     exe = fluid.Executor(place)
+    exe.run(fluid.default_startup_program())
     # yapf: disable
     if args.model_dir:
+        """
         def if_exist(var):
             return os.path.exists(os.path.join(args.model_dir, var.name))
         fluid.io.load_vars(exe, args.model_dir, predicate=if_exist)
+	"""
+        params = np.load(os.path.join(args.model_dir, 'model_final.pkl'))
+        params = params['blobs']
+        print('loading...')
+        temp = set()
+        for var in params.keys():
+            var_name = var
+            post = var[-2:]
+            if 'conv1' in var:
+                if '_b' in post and 'res' in var:
+                    var_name='bn_conv1_offset'
+                if '_s' in post:
+                    var_name='bn_conv1_scale'
+                if '_w' in post:
+                    var_name='conv1_weights'
+            elif 'res' in var_name:
+                var_name = var[:4]+chr(ord("a")+int(var[5]))+var[6:]
+                if '_w' in post:
+                    var_name = var_name[:-2]+'_weights'
+                if '_b' in post:
+                    var_name = 'bn'+var_name[3:-5]+'_offset'
+                if '_s' in post:
+                    var_name = 'bn'+var_name[3:-5]+'_scale'
+            if os.path.exists('model_4gpu/0/'+var_name) and var_name not in temp:
+                temp.add(var_name)
+                param = fluid.global_scope().find_var(var_name).get_tensor()
+                if var == 'bbox_pred_w' or var=='cls_score_w':
+                    params[var] = np.transpose(params[var])
+                param.set(params[var],place)
+            elif os.path.exists('model_4gpu/0/'+var_name) and var_name in temp:
+                print('repeated: {}'.format(var_name))
+    w_sum = 0.
+    cnt = 0
+    pad_set = set()
+    all_vars = fluid.default_main_program().global_block().vars
+    for k, v in all_vars.items():
+        if v.persistable and \
+        ('weights' in k or 'scale' in k or 'offset' in k or '_w' in k or '_b' in k):
+            pad_set.add(k)
+            w_sum += np.sum(np.array(fluid.global_scope().find_var(k).get_tensor()))
+            cnt += 1
+
+    #print('weight sum in paddle: {},{}'.format(w_sum, cnt))
     # yapf: enable
     test_reader = reader.test(args, batch_size)
     feeder = fluid.DataFeeder(place=place, feed_list=model.feeds())
 
     dts_res = []
-    fetch_list = [rpn_rois, confs, locs]
+    fetch_list = [scores, rpn_rois, confs, locs]
     for batch_id, data in enumerate(test_reader()):
         start = time.time()
         #image, gt_box, gt_label, is_crowd, im_info, im_id = data[0]
         im_info = []
+        image = []
         for i in range(len(data)):
+            image.append(data[i][0])
             im_info.append(data[i][4])
+        image_t = fluid.core.LoDTensor()
+        image_t.set(image, place)
 
-        rpn_rois_v, confs_v, locs_v = exe.run(
+        im_info_t = fluid.core.LoDTensor()
+        im_info_t.set(im_info, place)
+        feeding = {}
+        feeding['image'] = image_t
+        feeding['im_info'] = im_info_t
+
+        scores_v, rpn_rois_v, confs_v, locs_v = exe.run(
             fetch_list=[v.name for v in fetch_list],
-            feed=feeder.feed(data),
+            #feed=feeder.feed(data),
+            feed=feeding,
             return_numpy=False)
+        print('rpn_rois: {}'.format(np.sum(np.array(rpn_rois_v))))
+        print('shape: {}'.format(np.array(rpn_rois_v).shape))
+        print('confs: {}'.format(np.sum(np.array(confs_v))))
+        print('scores: {}'.format(np.sum(np.array(scores_v))))
+        print('shape: {}'.format(np.array(locs_v).shape))
+        print('locs: {}'.format(np.sum(np.array(locs_v))))
+        """
+	temp = np.array(\
+		fluid.global_scope().find_var('res4f.add.output.5.tmp_0').get_tensor())
+        print('shape:{}'.format(temp.shape))
+	print('temp: {}'.format(np.sum(temp)))
+	temp.dump('res4f.add.output.5.tmp_0')
+	np.array(rpn_rois_v).dump('rpn_rois')
+	"""
         new_lod, nmsed_out = get_nmsed_box(args, rpn_rois_v, confs_v, locs_v,
                                            class_nums, im_info,
                                            numId_to_catId_map)
+        print('nms box')
+        print(np.sum(nmsed_out[:, :4]))
+        print(nmsed_out[:, :4])
+        print('nms score')
+        print(np.sum(nmsed_out[:, 4]))
+        print(nmsed_out[:, 4])
         for i in range(len(data)):
             if str(data[i][5]) in args.image_path:
                 draw_bounding_box_on_image(args.image_path, nmsed_out,
@@ -107,6 +184,8 @@ def eval(args):
         dts_res += get_dt_res(new_lod, nmsed_out, data)
         end = time.time()
         print('batch id: {}, time: {}'.format(batch_id, end - start))
+        break
+    """
     with open("detection_result.json", 'w') as outfile:
         json.dump(dts_res, outfile)
     print("start evaluate using coco api")
@@ -116,6 +195,7 @@ def eval(args):
     cocoEval.evaluate()
     cocoEval.accumulate()
     cocoEval.summarize()
+    """
 
 
 def get_dt_res(lod, nmsed_out, data):
