@@ -93,6 +93,8 @@ def coco(mode,
 
     def reader():
         if mode == "train":
+            if cfg.enable_ce:
+                np.random.seed(0)
             roidb_perm = deque(np.random.permutation(roidbs))
             roidb_cur = 0
             batch_out = []
@@ -101,6 +103,7 @@ def coco(mode,
                 roidb_cur += 1
                 roidb_perm.rotate(-1)
                 if roidb_cur >= len(roidbs):
+
                     roidb_perm = deque(np.random.permutation(roidbs))
                     roidb_cur = 0
                 im, gt_boxes, gt_classes, is_crowd, im_info, im_id = roidb_reader(
