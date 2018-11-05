@@ -37,6 +37,7 @@ def main(_):
         action = pickle.load(f)
 
     model = nn.Model(inception_base.net, action)
+    print('initialized')
     model.run()
 
 

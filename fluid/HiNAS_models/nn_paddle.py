@@ -18,7 +18,7 @@ from __future__ import print_function
 
 import math
 import time
-
+import os
 import numpy as np
 import paddle
 import paddle.fluid as fluid
@@ -26,7 +26,6 @@ from paddle.fluid.layers.learning_rate_scheduler import _decay_step_counter
 import reader
 
 from absl import flags
-
 # import preprocess
 
 FLAGS = flags.FLAGS
@@ -34,7 +33,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_float("lr_max", 0.1, "initial learning rate")
 flags.DEFINE_float("lr_min", 0.0001, "limiting learning rate")
 
-flags.DEFINE_integer("batch_size", 128, "batch size")
+flags.DEFINE_integer("batch_size", 32, "batch size")
 flags.DEFINE_integer("num_epochs", 200, "total epochs to train")
 flags.DEFINE_float("weight_decay", 0.0004, "weight decay")
 
@@ -44,6 +43,7 @@ flags.DEFINE_float("gd_clip", 0, "gradient clipping. 0 for disable")
 flags.DEFINE_boolean("shuffle_image", True, "shuffle input images on training")
 
 flags.DEFINE_boolean("use_nccl", False, "Parallel training")
+flags.DEFINE_string("optimizer", "sgd", "Optimizer: momentum, sgd")
 
 flags.DEFINE_string(
     "save_model_path", None,
@@ -53,6 +53,7 @@ flags.DEFINE_string("load_model_path", None,
 flags.DEFINE_string("model_filename", "hinas.model",
                     "model filename to save or load.")
 
+IMAGENET_NUM_TRAIN_IMAGES = 1281167
 dataset_train_size = 50000
 
 
@@ -78,6 +79,17 @@ class Model(object):
         step = _decay_step_counter()
         lr = FLAGS.lr_min + (FLAGS.lr_max - FLAGS.lr_min) / 2 \
              * (1.0 + fluid.layers.ops.cos(step / self.max_step * math.pi))
+        return lr
+
+    def get_lr(self, batch_size):
+        num_batches_per_epoch = float(IMAGENET_NUM_TRAIN_IMAGES) / batch_size
+        total_step = num_batches_per_epoch * 90  # 90 for batch size = 64 * 4
+        print("batch size:", batch_size, "total_step:", total_step)
+        global_step = _decay_step_counter()
+        m = global_step / total_step
+        n = m * math.pi
+        frac = (1.0 + fluid.layers.ops.cos(n)) / 2
+        lr = 0.00005 + (0.025 - 0.00005) * frac
         return lr
 
     def test(self, test_reader, prog, exe, feeder, avg_loss, accuracy):
@@ -111,9 +123,10 @@ class Model(object):
 
     def run(self):
         # input data
-        train_files = reader.train10()
-        test_files = reader.test10()
-
+        print('processing data')
+        train_reader = reader.train(FLAGS.batch_size)
+        test_reader = reader.test(FLAGS.batch_size)
+        """
         if FLAGS.shuffle_image:
             train_reader = paddle.batch(
                 paddle.reader.shuffle(train_files, dataset_train_size),
@@ -122,9 +135,10 @@ class Model(object):
             train_reader = paddle.batch(
                 train_files, batch_size=FLAGS.batch_size)
         test_reader = paddle.batch(test_files, batch_size=FLAGS.batch_size)
+        """
 
         images = fluid.layers.data(
-            name='pixel', shape=[3, 32, 32], dtype='float32')
+            name='pixel', shape=[3, 224, 224], dtype='float32')
         labels = fluid.layers.data(name='label', shape=[1], dtype='int64')
 
         # train network
@@ -136,20 +150,27 @@ class Model(object):
                 max=FLAGS.gd_clip, min=-FLAGS.gd_clip))
 
         test_program = fluid.default_main_program().clone(for_test=True)
-
-        optimizer = fluid.optimizer.Momentum(
-            learning_rate=self.cosine_annealing(),
-            momentum=FLAGS.momentum,
-            use_nesterov=True,
-            regularization=fluid.regularizer.L2DecayRegularizer(
-                FLAGS.weight_decay))
+        """
+        print('setting optimizer...')
+        if FLAGS.optimizer == "momentum":
+            optimizer = fluid.optimizer.Momentum(
+                learning_rate=self.cosine_annealing(),
+                momentum=FLAGS.momentum,
+                use_nesterov=True,
+                regularization=fluid.regularizer.L2DecayRegularizer(
+                    FLAGS.weight_decay))
+        elif FLAGS.optimizer == "sgd":
+            optimizer = fluid.optimizer.SGD(self.get_lr(FLAGS.batch_size))
         optimizer.minimize(avg_loss)
-
+        """
+        print('optimizer loaded')
+        #fluid.memory_optimize(fluid.default_main_program())
         # run
+        print('run')
         place = fluid.CUDAPlace(0)
         exe = fluid.Executor(place)
         exe.run(fluid.default_startup_program())
-
+        print('fluid.default_startup_program()')
         if FLAGS.use_nccl:
             train_exe = fluid.ParallelExecutor(
                 use_cuda=True,
@@ -161,7 +182,7 @@ class Model(object):
                 main_program=test_program)
 
         feeder = fluid.DataFeeder(place=place, feed_list=[images, labels])
-
+        print('feeder got')
         if FLAGS.load_model_path is not None:
             print("loading pre-trainer model...")
             fluid.io.load_params(

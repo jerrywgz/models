@@ -211,8 +211,7 @@ def fully_connected(inputs, units):
 def bn_relu(inputs):
     """ batch norm + rely layer """
 
-    output = fluid.layers.batch_norm(
-        inputs, momentum=FLAGS.bn_decay, epsilon=0.001, data_layout="NCHW")
+    output = batch_norm(inputs)
     return fluid.layers.relu(output)
 
 
@@ -220,6 +219,12 @@ def dropout(inputs, dropout_rate=None):
     """ dropout layer
     :param rate:
     """
-
     return fluid.layers.dropout(inputs, dropout_prob= \
         FLAGS.dropout_rate if dropout_rate is None else dropout_rate)
+
+def batch_norm(inputs):
+    """ batch norm """
+    return fluid.layers.batch_norm(inputs, 
+                                   momentum=FLAGS.bn_decay, 
+                                   epsilon=0.001, 
+                                   data_layout="NCHW")

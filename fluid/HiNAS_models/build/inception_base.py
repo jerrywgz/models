@@ -18,8 +18,7 @@ from __future__ import absolute_import
 
 import numpy as np
 from absl import flags
-from paddle import fluid
-
+import paddle.fluid as fluid
 import build.layers as layers
 import build.ops as _ops
 
@@ -34,7 +33,7 @@ flags.DEFINE_integer("ratio", 6, "compression ratio")
 flags.DEFINE_float("dropout_rate_path", 0.4, "dropout rate for cell path")
 flags.DEFINE_float("dropout_rate_fin", 0.5, "dropout rate for finishing layer")
 
-num_classes = 10
+num_classes = 1000
 
 ops = [
     _ops.conv_1x1,
@@ -50,7 +49,39 @@ ops = [
 ]
 
 
+def factorized_reduction(inputs, filters, stride):
+    assert filters % 2 == 0, (
+        'Need even number of filters when using this factorized reduction.')
+    if stride == (1, 1):
+        # with tf.variable_scope("fred_conv_bn0"):
+        x = layers.conv(inputs, filters, stride)
+        x = fluid.layers.batch_norm(x)
+        return x
+
+    # with tf.variable_scope("fred_path1"):
+    path1 = layers.avgpool_valid(inputs, (1, 1), stride)
+    path1 = layers.conv(path1, int(filters / 2), (1, 1))
+
+    pad_arr = [0, 0, 0, 0, 0, 1, 0, 1]
+    path2 = fluid.layers.pad(inputs, pad_arr)
+    path2 = fluid.layers.slice(
+        path2,
+        axes=[2, 3],
+        starts=[1, 1],
+        ends=[path2.shape[2], path2.shape[3]])
+
+    # with tf.variable_scope("fred_path2"):
+    path2 = layers.avgpool_valid(path2, (1, 1), stride)
+    path2 = layers.conv(path2, int(filters / 2), (1, 1))
+
+    print("path2 shape: {}".format(path2.shape))
+    final_path = fluid.layers.concat(input=[path1, path2], axis=1)
+    final_path = fluid.layers.batch_norm(final_path)
+    return final_path
+
+
 def net(inputs, output, tokens):
+    fluid.layers.Print(inputs)
     adjvec = tokens[1]
     tokens = tokens[0]
     print("tokens: " + str(tokens))
@@ -67,9 +98,22 @@ def net(inputs, output, tokens):
 
     normal_to, reduce_to = np.split(tokens, 2)
     normal_ad, reduce_ad = map(slice, np.split(adjvec, 2))
-
+    print("AAA1: input.shape=" + str(inputs.shape))
     # with tf.variable_scope("0.initial_conv"):
-    x = layers.conv(inputs, FLAGS.width, (3, 3))
+    x = layers.conv(inputs, FLAGS.width, (3, 3), (2, 2))
+    print("AAA2: after initial_conv:" + str(x.shape))
+    # with tf.variable_scope("0.initial_bn"):
+    x = layers.batch_norm(x)
+    fluid.layers.Print(x)
+    stem_idx = [0, 1]
+    for c in stem_idx:
+        # with tf.variable_scope("%d.stem_cell" % c):
+        # NOTE:1 - using cell achevie 75% TOP1 ACC.
+        #x = cell(x, reduce_to, reduce_ad, 0., downsample=True) 
+        # NOTE: 2 - using factorized_reduction achevie 72.34% TOP1 ACC.
+        x = factorized_reduction(x, FLAGS.width * (2**(c + 1)), (2, 2))
+        print("AAA2: stem c=" + str(c) + "shape=" + str(x.shape))
+    fluid.layers.Print(x)
     pre_activation_idx = [1]
     reduction_idx = [
         i * FLAGS.num_cells + 1 for i in range(1, FLAGS.num_stages)
@@ -85,18 +129,20 @@ def net(inputs, output, tokens):
         elif c in reduction_idx:
             # with tf.variable_scope("%d.reduction_cell" % c):
             x = cell(x, reduce_to, reduce_ad, dropout_rate, downsample=True)
+            print("AAA4: reduction cell=" + str(c) + "shape=" + str(x.shape))
         else:
             # with tf.variable_scope("%d.normal_cell" % c):
             x = cell(x, normal_to, normal_ad, dropout_rate)
         if c in aux_head_idx:
             # with tf.variable_scope("aux_head"):
             aux_loss = aux_head(x, output)
+            print("AAA4: aux_loss=" + str(c) + "shape=" + str(aux_loss.shape))
 
     # with tf.variable_scope("%d.global_average_pooling" % (num_cells + 1)):
-    print("main:" + str(x.shape))
+    #print("main:" + str(x.shape))
     x = layers.bn_relu(x)
     x = layers.global_avgpool(x)
-
+    print("AAA5: after global_pool: " + str(x.shape))
     x = layers.dropout(x, dropout_rate)
     logits = layers.fully_connected(x, num_classes)
 
@@ -117,12 +163,14 @@ def aux_head(inputs, output):
     x = layers.conv(x, 128, (1, 1))
     print("aux:" + str(x.shape))
     x = layers.bn_relu(x)
-    print("aux:" + str(x.shape))
+    shape = x.shape
+    print("aux:" + str(shape))
     # x = layers.conv(x, 768, (4, 4), padding="valid")
-    x = layers.conv(x, 768, (4, 4), auto_pad=False)
-    print("aux:" + str(x.shape))
+    x = layers.conv(x, 768, (shape[2], shape[2]), auto_pad=False)
 
     # x = tf.squeeze(x, axis=[2, 3])
+    x = fluid.layers.squeeze(x, [2, 3])
+    print("12:" + str(x.shape))
     x = layers.bn_relu(x)
     logits = layers.fully_connected(x, num_classes)
 
@@ -173,5 +221,5 @@ def cell(inputs,
     x = fluid.layers.concat(tensors, axis=1)
     x = layers.conv(x, filters, (1, 1))
 
-    print("cell: %s -> %s" % (inputs.shape, x.shape))
+    #print("cell: %s -> %s" % (inputs.shape, x.shape))
     return x
