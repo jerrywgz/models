@@ -22,6 +22,7 @@ import time
 import shutil
 from utility import parse_args, print_arguments, SmoothedValue
 
+import multiprocessing
 import paddle
 import paddle.fluid as fluid
 import reader
@@ -35,22 +36,26 @@ def train():
     learning_rate = cfg.learning_rate
     image_shape = [3, cfg.TRAIN.max_size, cfg.TRAIN.max_size]
 
-    if cfg.debug:
+    if cfg.enable_ce:
         fluid.default_startup_program().random_seed = 1000
         fluid.default_main_program().random_seed = 1000
         import random
         random.seed(0)
         np.random.seed(0)
 
-    devices = os.getenv("CUDA_VISIBLE_DEVICES") or ""
-    devices_num = len(devices.split(","))
+    if not cfg.use_gpu:
+        devices_num = int(
+            os.environ.get('CPU_NUM', multiprocessing.cpu_count()))
+    else:
+        devices_num = fluid.core.get_cuda_device_count()
+        print('devices num: {}'.format(devices_num))
     total_batch_size = devices_num * cfg.TRAIN.im_per_batch
 
     model = model_builder.FasterRCNN(
         add_conv_body_func=resnet.add_ResNet50_conv4_body,
         add_roi_box_head_func=resnet.add_ResNet_roi_conv5_head,
         use_pyreader=cfg.use_pyreader,
-        use_random=True)
+        use_random=not cfg.enable_ce)
     model.build_model(image_shape)
     loss_cls, loss_bbox, rpn_cls_loss, rpn_reg_loss = model.loss()
     loss_cls.persistable = True
@@ -97,11 +102,12 @@ def train():
             batch_size=cfg.TRAIN.im_per_batch,
             total_batch_size=total_batch_size,
             padding_total=cfg.TRAIN.padding_minibatch,
-            shuffle=True)
+            shuffle=not cfg.enable_ce)
         py_reader = model.py_reader
         py_reader.decorate_paddle_reader(train_reader)
     else:
-        train_reader = reader.train(batch_size=total_batch_size, shuffle=True)
+        train_reader = reader.train(
+            batch_size=total_batch_size, shuffle=not cfg.enable_ce)
         feeder = fluid.DataFeeder(place=place, feed_list=model.feeds())
 
     def save_model(postfix):
@@ -109,6 +115,11 @@ def train():
         if os.path.isdir(model_path):
             shutil.rmtree(model_path)
         fluid.io.save_persistables(exe, model_path)
+
+    def continuous_eval(iter_id, loss_v, train_speed):
+        if cfg.enable_ce and iter_id == cfg.max_iter - 1:
+            print("kpis	train_cost_card%s	%s" % (devices_num, loss_v))
+            print("kpis	train_speed_card%s	%s" % (devices_num, train_speed))
 
     fetch_list = [loss, rpn_cls_loss, rpn_reg_loss, loss_cls, loss_bbox]
 
@@ -119,18 +130,23 @@ def train():
             start_time = time.time()
             prev_start_time = start_time
             every_pass_loss = []
+            train_time = []
             for iter_id in range(cfg.max_iter):
                 prev_start_time = start_time
                 start_time = time.time()
                 losses = train_exe.run(fetch_list=[v.name for v in fetch_list])
-                every_pass_loss.append(np.mean(np.array(losses[0])))
-                smoothed_loss.add_value(np.mean(np.array(losses[0])))
+                loss_v = np.mean(np.array(losses[0]))
+                every_pass_loss.append(loss_v)
+                smoothed_loss.add_value(loss_v)
                 lr = np.array(fluid.global_scope().find_var('learning_rate')
                               .get_tensor())
                 print("Iter {:d}, lr {:.6f}, loss {:.6f}, time {:.5f}".format(
                     iter_id, lr[0],
                     smoothed_loss.get_median_value(
                     ), start_time - prev_start_time))
+                period = start_time - prev_start_time
+                train_time.append(period)
+                continuous_eval(iter_id, loss_v, np.array(train_time).mean())
                 sys.stdout.flush()
                 if (iter_id + 1) % cfg.TRAIN.snapshot_iter == 0:
                     save_model("model_iter{}".format(iter_id))
@@ -143,6 +159,7 @@ def train():
         prev_start_time = start_time
         start = start_time
         every_pass_loss = []
+        train_time = []
         smoothed_loss = SmoothedValue(cfg.log_window)
         for iter_id, data in enumerate(train_reader()):
             prev_start_time = start_time
@@ -158,6 +175,9 @@ def train():
                 iter_id, lr[0],
                 smoothed_loss.get_median_value(), start_time - prev_start_time))
             sys.stdout.flush()
+            period = start_time - prev_start_time
+            train_time.append(period)
+            continuous_eval(iter_id, loss_v, np.array(train_time).mean())
             if (iter_id + 1) % cfg.TRAIN.snapshot_iter == 0:
                 save_model("model_iter{}".format(iter_id))
             if (iter_id + 1) == cfg.max_iter:

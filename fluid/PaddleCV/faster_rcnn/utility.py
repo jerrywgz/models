@@ -124,7 +124,7 @@ def parse_args():
     add_arg('nms_thresh',    float, 0.5,    "NMS threshold.")
     add_arg('score_thresh',    float, 0.05,    "score threshold for NMS.")
     add_arg('snapshot_stride',  int,    10000,    "save model every snapshot stride.")
-    add_arg('debug',            bool,   False,   "Debug mode")
+    add_arg('enable_ce',          bool,   False,   "if set True, enable continuous evaluation job.")
     # SINGLE EVAL AND DRAW
     add_arg('draw_threshold',  float, 0.8,    "Confidence threshold to draw bbox.")
     add_arg('image_path',       str,   'data/COCO17/val2017',  "The image path used to inference and visualize.")
