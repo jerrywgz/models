@@ -81,7 +81,6 @@ def factorized_reduction(inputs, filters, stride):
 
 
 def net(inputs, output, tokens):
-    fluid.layers.Print(inputs)
     adjvec = tokens[1]
     tokens = tokens[0]
     print("tokens: " + str(tokens))
@@ -104,7 +103,6 @@ def net(inputs, output, tokens):
     print("AAA2: after initial_conv:" + str(x.shape))
     # with tf.variable_scope("0.initial_bn"):
     x = layers.batch_norm(x)
-    fluid.layers.Print(x)
     stem_idx = [0, 1]
     for c in stem_idx:
         # with tf.variable_scope("%d.stem_cell" % c):
@@ -113,7 +111,6 @@ def net(inputs, output, tokens):
         # NOTE: 2 - using factorized_reduction achevie 72.34% TOP1 ACC.
         x = factorized_reduction(x, FLAGS.width * (2**(c + 1)), (2, 2))
         print("AAA2: stem c=" + str(c) + "shape=" + str(x.shape))
-    fluid.layers.Print(x)
     pre_activation_idx = [1]
     reduction_idx = [
         i * FLAGS.num_cells + 1 for i in range(1, FLAGS.num_stages)
