@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from numbers import Integral
-
+import paddle
 from paddle import fluid
 from paddle.fluid.param_attr import ParamAttr
 from paddle.fluid.regularizer import L2Decay
@@ -204,6 +204,7 @@ class MultiClassNMS(object):
         self.normalized = normalized
         self.nms_eta = nms_eta
         self.background_label = background_label
+        self.return_index = paddle.__version__ >= '1.6' or paddle.__version__ == '0.0.0'
 
 
 @register
