@@ -137,6 +137,22 @@ def main():
                 if FLAGS.fp16:
                     loss /= ctx.get_loss_scale_var()
 
+    def print_model(model, level=0):
+        if hasattr(model, '__dict__'):
+            for key in model.__dict__:
+                print(' '*level,'{}:'.format(key))
+                print_model(model.__dict__[key], level+1)
+        elif isinstance(model, list):
+            for sub_model in model:
+                print_model(sub_model, level)
+        else:
+            print(' '*level, model)
+    print_model(lr_builder)
+    print_model(optim_builder)
+    print_model(train_feed)
+    print_model(model)
+    
+    return
     # parse train fetches
     train_keys, train_values, _ = parse_fetches(train_fetches)
     train_values.append(lr)
