@@ -43,15 +43,14 @@ add_arg('model', str, "ResNet50", "Set the network to use.")
 add_arg('embedding_size', int, 0, "Embedding size.")
 add_arg('train_batch_size', int, 120, "Minibatch size.")
 add_arg('test_batch_size', int, 50, "Minibatch size.")
-add_arg('image_shape', str, "3,224,224", "input image size")
+add_arg('image_shape', str, "3,64,64", "input image size")
 add_arg('class_dim', int, 11318, "Class number.")
 add_arg('lr', float, 0.0001, "set learning rate.")
 add_arg('lr_strategy', str, "piecewise_decay", "Set the learning rate decay strategy.")
 add_arg('lr_steps', str, "100000", "step of lr")
-add_arg('total_iter_num', int, 100000, "total_iter_num")
+add_arg('total_iter_num', int, 1000, "total_iter_num")
 add_arg('display_iter_step', int, 10, "display_iter_step.")
-add_arg('test_iter_step', int, 5000, "test_iter_step.")
-add_arg('save_iter_step', int, 5000, "save_iter_step.")
+add_arg('save_iter_step', int, 50, "save_iter_step.")
 add_arg('use_gpu', bool, True, "Whether to use GPU or not.")
 add_arg('pretrained_model', str, None, "Whether to use pretrained model.")
 add_arg('checkpoint', str, None, "Whether to resume checkpoint.")
@@ -60,6 +59,8 @@ add_arg('loss_name', str, "triplet", "Set the loss type to use.")
 add_arg('samples_each_class', int, 2, "samples_each_class.")
 add_arg('margin', float, 0.1, "margin.")
 add_arg('npairs_reg_lambda', float, 0.01, "npairs reg lambda.")
+add_arg('train_data_path', str, "./data/", "path of training data ")
+add_arg('test_data_path', str, "./data/", "path of validation data or test data")
 # yapf: enable
 
 model_list = [m for m in dir(models) if "__" not in m]
@@ -238,34 +239,10 @@ def train_async(args):
                     (fmt_time(), iter_no, lr, avg_loss, avg_recall, avgruntime))
             sys.stdout.flush()
             totalruntime = 0
-        if iter_no % 1000 == 0:
+        if iter_no % 100 == 0:
             train_info = [0, 0, 0]
 
         totalruntime += period
-
-        if iter_no % args.test_iter_step == 0 and iter_no != 0:
-            f, l = [], []
-            for batch_id, data in enumerate(test_reader()):
-                t1 = time.time()
-                [feas] = exe.run(test_prog,
-                                 fetch_list=test_fetch_list,
-                                 feed=test_feeder.feed(data))
-                label = np.asarray([x[1] for x in data])
-                f.append(feas)
-                l.append(label)
-
-                t2 = time.time()
-                period = t2 - t1
-                if batch_id % 20 == 0:
-                    print("[%s] testbatch %d, time %2.2f sec" % \
-                            (fmt_time(), batch_id, period))
-
-            f = np.vstack(f)
-            l = np.hstack(l)
-            recall = recall_topk(f, l, k=1)
-            print("[%s] test_img_num %d, trainbatch %d, test_recall %.5f" % \
-                    (fmt_time(), len(f), iter_no, recall))
-            sys.stdout.flush()
 
         if iter_no % args.save_iter_step == 0 and iter_no != 0:
             model_path = os.path.join(model_save_dir + '/' + model_name,

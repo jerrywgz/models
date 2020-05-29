@@ -41,24 +41,26 @@ add_arg('model', str, "ResNet50", "Set the network to use.")
 add_arg('embedding_size', int, 0, "Embedding size.")
 add_arg('train_batch_size', int, 256, "Minibatch size.")
 add_arg('test_batch_size', int, 50, "Minibatch size.")
-add_arg('image_shape', str, "3,224,224", "input image size")
-add_arg('class_dim', int, 11318 , "Class number.")
+add_arg('image_shape', str, "3,64,64", "input image size")
+add_arg('class_dim', int, 1535 , "Class number.")
 add_arg('lr', float, 0.01, "set learning rate.")
 add_arg('lr_strategy', str, "piecewise_decay", "Set the learning rate decay strategy.")
-add_arg('lr_steps', str, "15000,25000", "step of lr")
-add_arg('total_iter_num', int, 30000, "total_iter_num")
+add_arg('lr_steps', str, "1500,2500", "step of lr")
+add_arg('total_iter_num', int, 3000, "total_iter_num")
 add_arg('display_iter_step', int, 10, "display_iter_step.")
-add_arg('test_iter_step', int, 1000, "test_iter_step.")
-add_arg('save_iter_step', int, 1000, "save_iter_step.")
+add_arg('test_iter_step', int, 10000, "test_iter_step.")
+add_arg('save_iter_step', int, 100, "save_iter_step.")
 add_arg('use_gpu', bool, True, "Whether to use GPU or not.")
 add_arg('pretrained_model', str, None, "Whether to use pretrained model.")
 add_arg('checkpoint', str, None, "Whether to resume checkpoint.")
-add_arg('model_save_dir', str, "output", "model save directory")
+add_arg('model_save_dir', str, "output_elem", "model save directory")
 add_arg('loss_name', str, "softmax", "Set the loss type to use.")
 add_arg('arc_scale', float, 80.0, "arc scale.")
 add_arg('arc_margin', float, 0.15, "arc margin.")
 add_arg('arc_easy_margin', bool, False, "arc easy margin.")
 add_arg('enable_ce', bool, False, "If set True, enable continuous evaluation job.")
+add_arg('train_data_path', str, "./data/", "path of training data ")
+add_arg('test_data_path', str, "./data/", "path of validation data or test data")
 # yapf: enable
 
 model_list = [m for m in dir(models) if "__" not in m]
@@ -193,6 +195,7 @@ def train_async(args):
     if pretrained_model:
 
         def if_exist(var):
+            if 'fc_0' in var.name: return False
             return os.path.exists(os.path.join(pretrained_model, var.name))
 
         fluid.io.load_vars(

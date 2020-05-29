@@ -22,116 +22,132 @@ import functools
 import numpy as np
 import paddle
 from imgtool import process_image
+import glob
+import json
 
 random.seed(0)
 
-DATA_DIR = "./data/Stanford_Online_Products/"
-TRAIN_LIST = './data/Stanford_Online_Products/Ebay_train.txt'
-VAL_LIST = './data/Stanford_Online_Products/Ebay_test.txt'
+
+def sign2dict(signs, pic_path):
+    # sign to dictionary
+    # key(string): sign_id
+    # value(dict): origin sign
+    sign_dict = {}
+    for sign in signs:
+        sign_id = sign['sign_id']
+        sign['pic_name'] = os.path.join(pic_path, sign['pic_id'] + '.jpg')
+        sign_dict[sign_id] = sign
+    return sign_dict
 
 
-def init_sop(mode):
+def init_sign(mode, path):
+    data_list = os.path.join(path, mode)
+    pic_path = os.path.join(path, 'pic')
+    anno_path = os.path.join(data_list, 'json')
+
     if mode == 'train':
-        train_data = {}
-        train_image_list = []
-        train_list = open(TRAIN_LIST, "r").readlines()
-        for i, item in enumerate(train_list):
-            items = item.strip().split()
-            if items[0] == 'image_id':
-                continue
-            path = items[3]
-            label = int(items[1]) - 1
-            train_image_list.append((path, label))
-            if label not in train_data:
-                train_data[label] = []
-            train_data[label].append(path)
-        random.shuffle(train_image_list)
-        print("{} dataset size: {}".format(mode, len(train_data)))
-        return train_data, train_image_list
+        anno_files = glob.glob(os.path.join(anno_path, '*.json'))
+        cls_id = 0
+        # cls_id to sign annotations
+        anno_data = []
+        anno_list = []
+        for anno_file in anno_files:
+            # sign_id to cls_id
+            sign_cls = {}
+            anno = json.load(open(anno_file))
+            signs = anno['signs']
+            sign_dict = sign2dict(signs, pic_path)
+            match = anno['match']
+            for pair in match:
+                sign = pair['sign_id']
+                match_sign = pair['match_sign_id']
+                if sign in sign_cls.keys():
+                    tmp_cls = sign_cls[sign]
+                    if 'sign' in match_sign:
+                        anno_data[tmp_cls].append(sign_dict[match_sign])
+                        sign_cls[match_sign] = tmp_cls
+                elif match_sign in sign_cls.keys():
+                    tmp_cls = sign_cls[match_sign]
+                    anno_data[tmp_cls].append(sign_dict[sign])
+                    sign_cls[sign] = tmp_cls
+                else:
+                    anno_data.append([sign_dict[sign]])
+                    sign_cls[sign] = cls_id
+                    if 'sign' in match_sign:
+                        anno_data[cls_id].append(sign_dict[match_sign])
+                        sign_cls[match_sign] = cls_id
+                    cls_id += 1
+        for cls, anno in enumerate(anno_data):
+            for sign in anno:
+                anno_list.append((sign, cls))
+        return anno_data, anno_list
+
     else:
-        val_data = {}
-        val_image_list = []
-        test_image_list = []
-        val_list = open(VAL_LIST, "r").readlines()
-        for i, item in enumerate(val_list):
-            items = item.strip().split()
-            if items[0] == 'image_id':
-                continue
-            path = items[3]
-            label = int(items[1])
-            val_image_list.append((path, label))
-            test_image_list.append(path)
-            if label not in val_data:
-                val_data[label] = []
-            val_data[label].append(path)
-        print("{} dataset size: {}".format(mode, len(val_data)))
-        if mode == 'val':
-            return val_data, val_image_list
-        else:
-            return test_image_list
+        anno_files = glob.glob(os.path.join(anno_path, '*.json'))
+        group_id = 0
+        sign_list = []
+        for anno_file in anno_files:
+            anno = json.load(open(anno_file))
+            signs = anno['signs']
+            group = anno['group']
+            # seq_id: 0 stands for A and 1 stands for B
+            for sign in signs:
+                pic_name = os.path.join(pic_path, sign['pic_id'] + '.jpg')
+                seq_id = int(sign['pic_id'] in group[1]['pic_list'])
+                sign.update({
+                    'group_id': group_id,
+                    'seq_id': seq_id,
+                    'pic_name': pic_name
+                })
+            sign_list.extend(signs)
+            group_id += 1
+        return sign_list
 
-def common_iterator(data, settings):
-    batch_size = settings.train_batch_size
-    samples_each_class = settings.samples_each_class
-    assert (batch_size % samples_each_class == 0)
-    class_num = batch_size // samples_each_class 
-    def train_iterator():
-        count = 0
-        labs = list(data.keys())
-        lab_num = len(labs)
-        ind = list(range(0, lab_num))
-        while True:
-            random.shuffle(ind)
-            ind_sample = ind[:class_num]
-            for ind_i in ind_sample:
-                lab = labs[ind_i]
-                data_list = data[lab]
-                data_ind = list(range(0, len(data_list)))
-                random.shuffle(data_ind)
-                anchor_ind = data_ind[:samples_each_class]
 
-                for anchor_ind_i in anchor_ind:
-                    anchor_path = DATA_DIR + data_list[anchor_ind_i]
-                    yield anchor_path, lab
-            count += 1
-            if count >= settings.total_iter_num + 1:
-                return
+def get_pos_pair(pos_data_list, data_ind):
+    anchor_ind = data_ind[0]
+    anchor_id = pos_data_list[anchor_ind]['sign_id']
+    for pos_ind in data_ind[1:]:
+        pos_id = pos_data_list[pos_ind]['sign_id']
+        # find pos and anchor in A and B
+        if pos_id[5] != anchor_id[5]:
+            return anchor_ind, pos_ind
 
-    return train_iterator
 
 def triplet_iterator(data, settings):
     batch_size = settings.train_batch_size
     assert (batch_size % 3 == 0)
+
     def train_iterator():
         total_count = settings.train_batch_size * (settings.total_iter_num + 1)
         count = 0
-        labs = list(data.keys())
-        lab_num = len(labs)
+        lab_num = len(data)
         ind = list(range(0, lab_num))
         while True:
             random.shuffle(ind)
             ind_pos, ind_neg = ind[:2]
-            lab_pos = labs[ind_pos]
-            pos_data_list = data[lab_pos]
+            pos_data_list = data[ind_pos]
+            if len(pos_data_list) < 2:
+                continue
             data_ind = list(range(0, len(pos_data_list)))
             random.shuffle(data_ind)
-            anchor_ind, pos_ind = data_ind[:2]
+            # select sign_A and sign_B separately
+            anchor_ind, pos_ind = get_pos_pair(pos_data_list, data_ind)
 
-            lab_neg = labs[ind_neg]
-            neg_data_list = data[lab_neg]
+            neg_data_list = data[ind_neg]
             neg_ind = random.randint(0, len(neg_data_list) - 1)
-            
-            anchor_path = DATA_DIR + pos_data_list[anchor_ind]
-            yield anchor_path, lab_pos
-            pos_path = DATA_DIR + pos_data_list[pos_ind]
-            yield pos_path, lab_pos
-            neg_path = DATA_DIR + neg_data_list[neg_ind]
-            yield neg_path, lab_neg
+            anchor_path = pos_data_list[anchor_ind]
+            yield anchor_path, pos_ind
+            pos_path = pos_data_list[pos_ind]
+            yield pos_path, pos_ind
+            neg_path = neg_data_list[neg_ind]
+            yield neg_path, neg_ind
             count += 3
             if count >= total_count:
                 return
 
     return train_iterator
+
 
 def arcmargin_iterator(data, settings):
     def train_iterator():
@@ -139,64 +155,66 @@ def arcmargin_iterator(data, settings):
         count = 0
         while True:
             for items in data:
-                path, label = items
-                path = DATA_DIR + path
-                yield path, label
+                sign, label = items
+                yield sign, label
                 count += 1
                 if count >= total_count:
                     return
+
     return train_iterator
 
-def image_iterator(data, mode):
-    def val_iterator():
+
+def image_iterator(data):
+    def pair_iterator():
         for items in data:
-            path, label = items
-            path = DATA_DIR + path 
-            yield path, label
-    def test_iterator():
-        for item in data:
-            path = item
-            path = DATA_DIR + path 
-            yield [path]
-    if mode == 'val':
-        return val_iterator
-    else:
-        return test_iterator
+            group = items['group_id']
+            label = int(items['type'])
+            seq_id = int(items['seq_id'])
+            yield items, group, label, seq_id
+
+    return pair_iterator
+
 
 def createreader(settings, mode):
     def metric_reader():
         if mode == 'train':
-            train_data, train_image_list = init_sop('train')
+            train_data, train_image_list = init_sign('train',
+                                                     settings.train_data_path)
             loss_name = settings.loss_name
             if loss_name in ["softmax", "arcmargin"]:
                 return arcmargin_iterator(train_image_list, settings)()
             elif loss_name == 'triplet':
                 return triplet_iterator(train_data, settings)()
             else:
-                return common_iterator(train_data, settings)()
-        elif mode == 'val':
-            val_data, val_image_list = init_sop('val')
-            return image_iterator(val_image_list, 'val')()
+                raise NameError(
+                    "Invalid loss name: {}. You should use softmax, arcmargin, triplet".
+                    format(loss_name))
         else:
-            test_image_list = init_sop('test')
-            return image_iterator(test_image_list, 'test')()
+            sign_list = init_sign('val', settings.test_data_path)
+            return image_iterator(sign_list)()
 
     image_shape = settings.image_shape.split(',')
-    assert(image_shape[1] == image_shape[2])
+    assert (image_shape[1] == image_shape[2])
     image_size = int(image_shape[2])
-    keep_order = False if mode != 'train' or settings.loss_name in ['softmax', 'arcmargin'] else True
-    image_mapper = functools.partial(process_image,
-            mode=mode, color_jitter=False, rotate=False, crop_size=image_size)
+    image_mapper = functools.partial(
+        process_image,
+        mode=mode,
+        color_jitter=False,
+        rotate=False,
+        crop_size=image_size)
     reader = paddle.reader.xmap_readers(
-            image_mapper, metric_reader, 8, 1000, order=keep_order)
+        image_mapper, metric_reader, 8, 1000, order=True)
     return reader
 
 
-def train(settings): 
+def train(settings):
     return createreader(settings, "train")
 
+
 def test(settings):
-    return createreader(settings, "val")
+    return createreader(settings, "test")
+    #return createreader(settings, "val")
+
 
 def infer(settings):
     return createreader(settings, "test")

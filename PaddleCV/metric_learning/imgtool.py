@@ -25,6 +25,7 @@ import numpy as np
 
 #random.seed(0)
 
+
 def rotate_image(img):
     """ rotate_image """
     (h, w) = img.shape[:2]
@@ -33,6 +34,7 @@ def rotate_image(img):
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
     rotated = cv2.warpAffine(img, M, (w, h))
     return rotated
+
 
 def random_crop(img, size, scale=None, ratio=None):
     """ random_crop """
@@ -43,13 +45,13 @@ def random_crop(img, size, scale=None, ratio=None):
     w = 1. * aspect_ratio
     h = 1. / aspect_ratio
 
-    bound = min((float(img.shape[1]) / img.shape[0]) / (w ** 2),
-                (float(img.shape[0]) / img.shape[1]) / (h ** 2))
+    bound = min((float(img.shape[1]) / img.shape[0]) / (w**2),
+                (float(img.shape[0]) / img.shape[1]) / (h**2))
     scale_max = min(scale[1], bound)
     scale_min = min(scale[0], bound)
 
     target_area = img.shape[0] * img.shape[1] * random.uniform(scale_min,
-                                                             scale_max)
+                                                               scale_max)
     target_size = math.sqrt(target_area)
     w = int(target_size * w)
     h = int(target_size * h)
@@ -57,20 +59,24 @@ def random_crop(img, size, scale=None, ratio=None):
     i = random.randint(0, img.shape[0] - h)
     j = random.randint(0, img.shape[1] - w)
 
-    img = img[i:i+h, j:j+w, :]
+    img = img[i:i + h, j:j + w, :]
     resized = cv2.resize(img, (size, size), interpolation=cv2.INTER_LANCZOS4)
     return resized
 
+
 def distort_color(img):
     return img
+
 
 def resize_short(img, target_size):
     """ resize_short """
     percent = float(target_size) / min(img.shape[0], img.shape[1])
     resized_width = int(round(img.shape[1] * percent))
     resized_height = int(round(img.shape[0] * percent))
-    resized = cv2.resize(img, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4)
+    resized = cv2.resize(
+        img, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4)
     return resized
+
 
 def crop_image(img, target_size, center):
     """ crop_image """
@@ -87,16 +93,37 @@ def crop_image(img, target_size, center):
     img = img[h_start:h_end, w_start:w_end, :]
     return img
 
-def process_image(sample, mode, color_jitter, rotate,
-        crop_size=224, mean=None, std=None):
+
+def xywh2xyxy(img, sample_dict):
+    height, width = img.shape[:2]
+    h = sample_dict['h']
+    w = sample_dict['w']
+    y = sample_dict['y']
+    x = sample_dict['x']
+    # expand bbox
+    x1 = max(int(x - w / 2.), 0)
+    x2 = min(int(x + w * 3. / 2.), width)
+    y1 = max(int(y - h / 2.), 0)
+    y2 = min(int(y + h * 3. / 2.), height)
+    return x1, y1, x2, y2
+
+
+def process_image(sample,
+                  mode,
+                  color_jitter,
+                  rotate,
+                  crop_size=224,
+                  mean=None,
+                  std=None):
     """ process_image """
 
     mean = [0.485, 0.456, 0.406] if mean is None else mean
     std = [0.229, 0.224, 0.225] if std is None else std
 
-    image_name = sample[0]
-    img = cv2.imread(image_name) # BGR mode, but need RGB mode
-
+    sample_dict = sample[0]
+    img = cv2.imread(sample_dict['pic_name'])  # BGR mode, but need RGB mode
+    x1, y1, x2, y2 = xywh2xyxy(img, sample_dict)
+    img = img[y1:y2, x1:x2, :]
     if mode == 'train':
         if rotate:
             img = rotate_image(img)
@@ -118,10 +145,12 @@ def process_image(sample, mode, color_jitter, rotate,
     img -= img_mean
     img /= img_std
 
-    if mode == 'train' or mode == 'val':
+    if mode == 'train':
         return (img, sample[1])
-    elif mode == 'test':
-        return (img, )
+    else:
+        # image, group, label, seq_id
+        return (img, sample[1], sample[2], sample[3])
+
 
 def image_mapper(**kwargs):
     """ image_mapper """
