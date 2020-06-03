@@ -123,6 +123,7 @@ def process_image(sample,
     sample_dict = sample[0]
     img = cv2.imread(sample_dict['pic_name'])  # BGR mode, but need RGB mode
     x1, y1, x2, y2 = xywh2xyxy(img, sample_dict)
+    if x2 <= x1 or y2 <= y1: print('Error Image: {}'.format(sample_dict))
     img = img[y1:y2, x1:x2, :]
     if mode == 'train':
         if rotate:

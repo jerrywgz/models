@@ -26,8 +26,8 @@ import paddle
 import paddle.fluid as fluid
 import models
 import reader
-from utility import add_arguments, print_arguments, check_cuda
-from utility import fmt_time, recall_topk
+from utility import add_arguments, print_arguments, check_cuda, load_pretrain
+from utility import fmt_time, recall_topk, post_process, save_result
 
 # yapf: disable
 parser = argparse.ArgumentParser(description=__doc__)
@@ -35,9 +35,13 @@ add_arg = functools.partial(add_arguments, argparser=parser)
 add_arg('model', str, "ResNet50", "Set the network to use.")
 add_arg('embedding_size', int, 0, "Embedding size.")
 add_arg('batch_size', int, 10, "Minibatch size.")
-add_arg('image_shape', str, "3,224,224", "Input image size.")
+add_arg('image_shape', str, "3,64,64", "Input image size.")
 add_arg('use_gpu', bool, True, "Whether to use GPU or not.")
 add_arg('pretrained_model', str, None, "Whether to use pretrained model.")
+add_arg('test_data_path', str, "./data/", "path of validation data or test data")
+add_arg('thresh', float, 0.8, "threshold for similarity distance")
+add_arg('top_k', int, 10, "the number of images to match")
+add_arg('output_path', str, "./json_output", "path for saving json result")
 # yapf: enable
 
 model_list = [m for m in dir(models) if "__" not in m]
@@ -52,8 +56,17 @@ def eval(args):
     assert model_name in model_list, "{} is not in lists: {}".format(args.model,
                                                                      model_list)
 
-    image = fluid.layers.data(name='image', shape=image_shape, dtype='float32')
-    label = fluid.layers.data(name='label', shape=[1], dtype='int64')
+    image = fluid.data(
+        name='image', shape=[None] + image_shape, dtype='float32')
+    group = fluid.data(name='group', shape=[None, 1], dtype='int64')
+    label = fluid.data(name='label', shape=[None, 1], dtype='int64')
+    seq_id = fluid.data(name='seq_id', shape=[None, 1], dtype='int64')
+
+    test_loader = fluid.io.DataLoader.from_generator(
+        feed_list=[image, group, label, seq_id],
+        capacity=64,
+        use_double_buffer=True,
+        iterable=True)
 
     # model definition
     model = models.__dict__[model_name]()
@@ -66,27 +79,28 @@ def eval(args):
     exe.run(fluid.default_startup_program())
 
     if pretrained_model:
+        fluid.load(
+            program=test_program, model_path=pretrained_model, executor=exe)
 
-        def if_exist(var):
-            return os.path.exists(os.path.join(pretrained_model, var.name))
-
-        fluid.io.load_vars(exe, pretrained_model, predicate=if_exist)
-
-    test_reader = paddle.batch(
-        reader.eval(args), batch_size=args.batch_size, drop_last=False)
-    feeder = fluid.DataFeeder(place=place, feed_list=[image, label])
+    test_loader.set_sample_generator(
+        reader.test(args),
+        batch_size=args.batch_size,
+        drop_last=False,
+        places=place)
 
     fetch_list = [out.name]
 
-    f, l = [], []
-    for batch_id, data in enumerate(test_reader()):
+    f, l, g, s = [], [], [], []
+    for batch_id, data in enumerate(test_loader()):
         t1 = time.time()
-        [feas] = exe.run(test_program,
-                         fetch_list=fetch_list,
-                         feed=feeder.feed(data))
-        label = np.asarray([x[1] for x in data])
+        [feas] = exe.run(test_program, fetch_list=fetch_list, feed=data)
+        group = np.asarray(data[0]['group'])
+        label = np.asarray(data[0]['label'])
+        seq_id = np.asarray(data[0]['seq_id'])
         f.append(feas)
-        l.append(label)
+        g.append(np.squeeze(group))
+        l.append(np.squeeze(label))
+        s.append(np.squeeze(seq_id))
 
         t2 = time.time()
         period = t2 - t1
@@ -95,9 +109,16 @@ def eval(args):
                     (fmt_time(), batch_id, period))
 
     f = np.vstack(f)
+    g = np.hstack(g)
     l = np.hstack(l)
-    recall = recall_topk(f, l, k=1)
-    print("[%s] End test %d, test_recall %.5f" % (fmt_time(), len(f), recall))
+    s = np.hstack(s)
+    res_final = post_process(f, g, l, s, args.thresh, k=args.top_k)
+
+    output_path = args.output_path
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+    print("Saving result to {}".format(output_path))
+    save_result(res_final, args.test_data_path, output_path)
     sys.stdout.flush()
 
 

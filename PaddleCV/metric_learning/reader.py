@@ -34,6 +34,7 @@ def sign2dict(signs, pic_path):
     # value(dict): origin sign
     sign_dict = {}
     for sign in signs:
+        if sign['h'] <= 0 or sign['w'] <= 0: continue
         sign_id = sign['sign_id']
         sign['pic_name'] = os.path.join(pic_path, sign['pic_id'] + '.jpg')
         sign_dict[sign_id] = sign
@@ -61,6 +62,15 @@ def init_sign(mode, path):
             for pair in match:
                 sign = pair['sign_id']
                 match_sign = pair['match_sign_id']
+                if 'sign' in sign and sign not in sign_dict.keys():
+                    print('Illegal sign: {} in {} and ignore it'.format(
+                        sign, anno_file))
+                    continue
+                if 'sign' in match_sign and match_sign not in sign_dict.keys():
+                    print('Illegal sign: {} in {} and ignore it'.format(
+                        match_sign, anno_file))
+                    continue
+
                 if sign in sign_cls.keys():
                     tmp_cls = sign_cls[sign]
                     if 'sign' in match_sign:
@@ -77,9 +87,11 @@ def init_sign(mode, path):
                         anno_data[cls_id].append(sign_dict[match_sign])
                         sign_cls[match_sign] = cls_id
                     cls_id += 1
+        print('total class num: {}'.format(cls_id))
         for cls, anno in enumerate(anno_data):
             for sign in anno:
                 anno_list.append((sign, cls))
+        print('total instance num: {}'.format(len(anno_list)))
         return anno_data, anno_list
 
     else:
@@ -178,7 +190,7 @@ def image_iterator(data):
 def createreader(settings, mode):
     def metric_reader():
         if mode == 'train':
-            train_data, train_image_list = init_sign('train',
+            train_data, train_image_list = init_sign(mode,
                                                      settings.train_data_path)
             loss_name = settings.loss_name
             if loss_name in ["softmax", "arcmargin"]:
@@ -190,7 +202,7 @@ def createreader(settings, mode):
                     "Invalid loss name: {}. You should use softmax, arcmargin, triplet".
                     format(loss_name))
         else:
-            sign_list = init_sign('val', settings.test_data_path)
+            sign_list = init_sign(mode, settings.test_data_path)
             return image_iterator(sign_list)()
 
     image_shape = settings.image_shape.split(',')
@@ -212,9 +224,4 @@ def train(settings):
 
 
 def test(settings):
-    return createreader(settings, "test")
-    #return createreader(settings, "val")
-
-
-def infer(settings):
     return createreader(settings, "test")

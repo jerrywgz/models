@@ -212,16 +212,10 @@ def post_process(results, groups, labels, seq_id, thresh, k):
         im_id += 1
 
     for group_id, res_pg in enumerate(res_group):
-        #res_label = {}
         res_list = []
         seq_list = []
         if len(res_pg) == 0: continue
         for res in res_pg:
-            #if res[1] not in res_label:
-            #    res_label[res[1]] = [[res[0]], [res[2]]]
-            #else:
-            #    res_label[res[1]][0].append(res[0])
-            #    res_label[res[1]][1].append(res[2])
             res_list.append(res[0])
             seq_list.append(res[2])
         matched_index = cosine_distance(np.array(res_list), seq_list, thresh, k)
@@ -237,7 +231,7 @@ def post_process(results, groups, labels, seq_id, thresh, k):
 
 
 def save_result(res_final, path, output_path):
-    data_list = os.path.join(path, 'val')
+    data_list = os.path.join(path, 'test')
     anno_path = os.path.join(data_list, 'json')
     anno_files = glob.glob(os.path.join(anno_path, '*.json'))
     for i, anno_file in enumerate(anno_files):
@@ -260,3 +254,25 @@ def save_result(res_final, path, output_path):
         with open(result_file, 'w') as fp:
             json.dump(anno, fp)
         fp.close()
+
+
+def load_pretrain(prog, pretrained_model):
+    state = fluid.io.load_program_state(pretrained_model)
+    ignore_set = set()
+    # ignore the parameter which mismatch the shape 
+    # between the model and pretrain weight.
+    all_var_shape = {}
+    for block in prog.blocks:
+        for param in block.all_parameters():
+            all_var_shape[param.name] = param.shape
+    ignore_set.update([
+        name for name, shape in all_var_shape.items()
+        if name in state and shape != state[name].shape
+    ])
+
+    if len(ignore_set) > 0:
+        for k in ignore_set:
+            if k in state:
+                print('warning: variable {} not used'.format(k))
+                del state[k]
+    fluid.io.set_program_state(prog, state)

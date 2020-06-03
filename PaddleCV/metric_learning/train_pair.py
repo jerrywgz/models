@@ -33,7 +33,7 @@ from losses import TripletLoss
 from losses import QuadrupletLoss
 from losses import EmlLoss
 from losses import NpairsLoss
-from utility import add_arguments, print_arguments
+from utility import add_arguments, print_arguments, load_pretrain
 from utility import fmt_time, recall_topk, get_gpu_num, check_cuda
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -41,26 +41,22 @@ add_arg = functools.partial(add_arguments, argparser=parser)
 # yapf: disable
 add_arg('model', str, "ResNet50", "Set the network to use.")
 add_arg('embedding_size', int, 0, "Embedding size.")
-add_arg('train_batch_size', int, 120, "Minibatch size.")
-add_arg('test_batch_size', int, 50, "Minibatch size.")
+add_arg('train_batch_size', int, 150, "Minibatch size.")
 add_arg('image_shape', str, "3,64,64", "input image size")
-add_arg('class_dim', int, 11318, "Class number.")
-add_arg('lr', float, 0.0001, "set learning rate.")
+add_arg('lr', float, 0.00001, "set learning rate.")
 add_arg('lr_strategy', str, "piecewise_decay", "Set the learning rate decay strategy.")
-add_arg('lr_steps', str, "100000", "step of lr")
-add_arg('total_iter_num', int, 1000, "total_iter_num")
+add_arg('lr_steps', str, "5000", "step of lr")
+add_arg('total_iter_num', int, 5000, "total_iter_num")
 add_arg('display_iter_step', int, 10, "display_iter_step.")
-add_arg('save_iter_step', int, 50, "save_iter_step.")
+add_arg('save_iter_step', int, 500, "save_iter_step.")
 add_arg('use_gpu', bool, True, "Whether to use GPU or not.")
 add_arg('pretrained_model', str, None, "Whether to use pretrained model.")
 add_arg('checkpoint', str, None, "Whether to resume checkpoint.")
-add_arg('model_save_dir', str, "output", "model save directory")
+add_arg('model_save_dir', str, "output_pair", "model save directory")
 add_arg('loss_name', str, "triplet", "Set the loss type to use.")
 add_arg('samples_each_class', int, 2, "samples_each_class.")
 add_arg('margin', float, 0.1, "margin.")
-add_arg('npairs_reg_lambda', float, 0.01, "npairs reg lambda.")
 add_arg('train_data_path', str, "./data/", "path of training data ")
-add_arg('test_data_path', str, "./data/", "path of validation data or test data")
 # yapf: enable
 
 model_list = [m for m in dir(models) if "__" not in m]
@@ -82,71 +78,46 @@ def optimizer_setting(params):
     return optimizer
 
 
-def net_config(image, label, model, args, is_train):
+def net_config(image, label, model, args):
     assert args.model in model_list, "{} is not in lists: {}".format(args.model,
                                                                      model_list)
 
     out = model.net(input=image, embedding_size=args.embedding_size)
-    if not is_train:
-        return None, out
 
     if args.loss_name == "triplet":
         metricloss = TripletLoss(margin=args.margin, )
-    elif args.loss_name == "quadruplet":
-        metricloss = QuadrupletLoss(
-            train_batch_size=args.train_batch_size,
-            samples_each_class=args.samples_each_class,
-            margin=args.margin, )
-    elif args.loss_name == "eml":
-        metricloss = EmlLoss(
-            train_batch_size=args.train_batch_size,
-            samples_each_class=args.samples_each_class, )
-    elif args.loss_name == "npairs":
-        metricloss = NpairsLoss(
-            train_batch_size=args.train_batch_size,
-            samples_each_class=args.samples_each_class,
-            reg_lambda=args.npairs_reg_lambda, )
+    else:
+        raise NameError("Invalid loss name: {}. You should use triplet".format(
+            args.loss_name))
     cost = metricloss.loss(out, label)
     avg_cost = fluid.layers.mean(x=cost)
     return avg_cost, out
 
 
-def build_program(is_train, main_prog, startup_prog, args):
+def build_program(main_prog, startup_prog, args):
     image_shape = [int(m) for m in args.image_shape.split(",")]
     model = models.__dict__[args.model]()
     with fluid.program_guard(main_prog, startup_prog):
-        if is_train:
-            queue_capacity = 64
-            py_reader = fluid.layers.py_reader(
-                capacity=queue_capacity,
-                shapes=[[-1] + image_shape, [-1, 1]],
-                lod_levels=[0, 0],
-                dtypes=["float32", "int64"],
-                use_double_buffer=True)
-            image, label = fluid.layers.read_file(py_reader)
-        else:
-            image = fluid.layers.data(
-                name='image', shape=image_shape, dtype='float32')
-            label = fluid.layers.data(name='label', shape=[1], dtype='int64')
+        queue_capacity = 64
+        image = fluid.data(
+            name='image', shape=[None] + image_shape, dtype='float32')
+        label = fluid.data(name='label', shape=[None, 1], dtype='int64')
+        loader = fluid.io.DataLoader.from_generator(
+            feed_list=[image, label],
+            capacity=queue_capacity,
+            use_double_buffer=True,
+            iterable=True)
 
         with fluid.unique_name.guard():
-            avg_cost, out = net_config(image, label, model, args, is_train)
-            if is_train:
-                params = model.params
-                params["lr"] = args.lr
-                params["learning_strategy"]["lr_steps"] = args.lr_steps
-                params["learning_strategy"]["name"] = args.lr_strategy
-                optimizer = optimizer_setting(params)
-                optimizer.minimize(avg_cost)
-                global_lr = optimizer._global_learning_rate()
-    """            
-    if not is_train:
-        main_prog = main_prog.clone(for_test=True)
-    """
-    if is_train:
-        return py_reader, avg_cost, global_lr, out, label
-    else:
-        return out, image, label
+            avg_cost, out = net_config(image, label, model, args)
+            params = model.params
+            params["lr"] = args.lr
+            params["learning_strategy"]["lr_steps"] = args.lr_steps
+            params["learning_strategy"]["name"] = args.lr_strategy
+            optimizer = optimizer_setting(params)
+            optimizer.minimize(avg_cost)
+            global_lr = optimizer._global_learning_rate()
+    return loader, avg_cost, global_lr, out, label
 
 
 def train_async(args):
@@ -162,40 +133,30 @@ def train_async(args):
     train_prog = fluid.Program()
     tmp_prog = fluid.Program()
 
-    train_py_reader, train_cost, global_lr, train_feas, train_label = build_program(
-        is_train=True,
-        main_prog=train_prog,
-        startup_prog=startup_prog,
-        args=args)
-    test_feas, image, label = build_program(
-        is_train=False,
-        main_prog=tmp_prog,
-        startup_prog=startup_prog,
-        args=args)
-    test_prog = tmp_prog.clone(for_test=True)
+    train_loader, train_cost, global_lr, train_feas, train_label = build_program(
+        main_prog=train_prog, startup_prog=startup_prog, args=args)
 
     train_fetch_list = [
         global_lr.name, train_cost.name, train_feas.name, train_label.name
     ]
-    test_fetch_list = [test_feas.name]
 
     place = fluid.CUDAPlace(0) if args.use_gpu else fluid.CPUPlace()
     exe = fluid.Executor(place)
+    num_trainers = int(os.environ.get('PADDLE_TRAINERS_NUM', 1))
+    if num_trainers <= 1 and args.use_gpu:
+        places = fluid.framework.cuda_places()
+    else:
+        places = place
 
     exe.run(startup_prog)
 
     logging.debug('after run startup program')
 
     if checkpoint is not None:
-        fluid.io.load_persistables(exe, checkpoint, main_program=train_prog)
+        fluid.load(program=train_prog, model_path=checkpoint, executor=exe)
 
     if pretrained_model:
-
-        def if_exist(var):
-            return os.path.exists(os.path.join(pretrained_model, var.name))
-
-        fluid.io.load_vars(
-            exe, pretrained_model, main_program=train_prog, predicate=if_exist)
+        load_pretrain(train_prog, pretrained_model)
 
     if args.use_gpu:
         devicenum = get_gpu_num()
@@ -203,14 +164,12 @@ def train_async(args):
         devicenum = int(os.environ.get('CPU_NUM', 1))
     assert (args.train_batch_size % devicenum) == 0
     train_batch_size = args.train_batch_size / devicenum
-    test_batch_size = args.test_batch_size
 
-    train_reader = paddle.batch(
-        reader.train(args), batch_size=train_batch_size, drop_last=True)
-    test_reader = paddle.batch(
-        reader.test(args), batch_size=test_batch_size, drop_last=False)
-    test_feeder = fluid.DataFeeder(place=place, feed_list=[image, label])
-    train_py_reader.decorate_paddle_reader(train_reader)
+    train_loader.set_sample_generator(
+        reader.train(args),
+        batch_size=train_batch_size,
+        drop_last=True,
+        places=places)
 
     train_exe = fluid.ParallelExecutor(
         main_program=train_prog,
@@ -218,40 +177,39 @@ def train_async(args):
         loss_name=train_cost.name)
 
     totalruntime = 0
-    train_py_reader.start()
     iter_no = 0
-    train_info = [0, 0, 0]
+    train_info = [0, 0]
     while iter_no <= args.total_iter_num:
-        t1 = time.time()
-        lr, loss, feas, label = train_exe.run(fetch_list=train_fetch_list)
-        t2 = time.time()
-        period = t2 - t1
-        lr = np.mean(np.array(lr))
-        train_info[0] += np.mean(np.array(loss))
-        train_info[1] += recall_topk(feas, label, k=1)
-        train_info[2] += 1
-        if iter_no % args.display_iter_step == 0:
-            avgruntime = totalruntime / args.display_iter_step
-            avg_loss = train_info[0] / train_info[2]
-            avg_recall = train_info[1] / train_info[2]
-            print("[%s] trainbatch %d, lr %.6f, loss %.6f, "\
-                    "recall %.4f, time %2.2f sec" % \
-                    (fmt_time(), iter_no, lr, avg_loss, avg_recall, avgruntime))
-            sys.stdout.flush()
-            totalruntime = 0
-        if iter_no % 100 == 0:
-            train_info = [0, 0, 0]
+        for train_batch in train_loader():
+            t1 = time.time()
+            lr, loss, feas, label = train_exe.run(feed=train_batch,
+                                                  fetch_list=train_fetch_list)
+            t2 = time.time()
+            period = t2 - t1
+            lr = np.mean(np.array(lr))
+            train_info[0] += np.mean(np.array(loss))
+            train_info[1] += 1
+            if iter_no % args.display_iter_step == 0:
+                avgruntime = totalruntime / args.display_iter_step
+                avg_loss = train_info[0] / train_info[1]
+                print("[%s] trainbatch %d, lr %.6f, loss %.6f, "\
+                    "time %2.2f sec" % \
+                    (fmt_time(), iter_no, lr, avg_loss, avgruntime))
+                sys.stdout.flush()
+                totalruntime = 0
+            if iter_no % args.display_iter_step == 0:
+                train_info = [0, 0]
 
-        totalruntime += period
+            totalruntime += period
 
-        if iter_no % args.save_iter_step == 0 and iter_no != 0:
-            model_path = os.path.join(model_save_dir + '/' + model_name,
-                                      str(iter_no))
-            if not os.path.isdir(model_path):
-                os.makedirs(model_path)
-            fluid.io.save_persistables(exe, model_path, main_program=train_prog)
+            if iter_no % args.save_iter_step == 0 and iter_no != 0:
+                model_path = os.path.join(model_save_dir + '/' + model_name,
+                                          str(iter_no))
+                if not os.path.isdir(model_path):
+                    os.makedirs(model_path)
+                fluid.save(program=train_prog, model_path=model_path)
 
-        iter_no += 1
+            iter_no += 1
 
 
 def initlogging():
