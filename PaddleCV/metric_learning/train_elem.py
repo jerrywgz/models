@@ -41,7 +41,7 @@ add_arg('model', str, "ResNet50", "Set the network to use.")
 add_arg('embedding_size', int, 0, "Embedding size.")
 add_arg('train_batch_size', int, 256, "Minibatch size.")
 add_arg('image_shape', str, "3,64,64", "input image size")
-add_arg('class_dim', int, 10000 , "Class number.")
+add_arg('class_dim', int, 9993, "Class number.")
 add_arg('lr', float, 0.01, "set learning rate.")
 add_arg('lr_strategy', str, "piecewise_decay", "Set the learning rate decay strategy.")
 add_arg('lr_steps', str, "9000,15000", "step of lr")
@@ -56,7 +56,7 @@ add_arg('loss_name', str, "softmax", "Set the loss type to use.")
 add_arg('arc_scale', float, 80.0, "arc scale.")
 add_arg('arc_margin', float, 0.15, "arc margin.")
 add_arg('arc_easy_margin', bool, False, "arc easy margin.")
-add_arg('train_data_path', str, "./data/", "path of training data ")
+add_arg('data_path', str, "./data/", "path of training data ")
 # yapf: enable
 
 model_list = [m for m in dir(models) if "__" not in m]

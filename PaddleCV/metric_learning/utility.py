@@ -230,24 +230,46 @@ def post_process(results, groups, labels, seq_id, thresh, k):
     return res_final
 
 
-def save_result(res_final, path, output_path):
-    data_list = os.path.join(path, 'test')
-    anno_path = os.path.join(data_list, 'json')
-    anno_files = glob.glob(os.path.join(anno_path, '*.json'))
+def generate_sign_id(anno, filename):
+    group = anno['group']
+    group_a = group[0]['pic_list']
+    group_b = group[1]['pic_list']
+    signs = anno['signs']
+    id_a, id_b = 1, 1
+    for sign in signs:
+        if sign['pic_id'] in group_a:
+            sign['sign_id'] = 'sign_A_{}'.format(id_a)
+            id_a += 1
+        elif sign['pic_id'] in group_b:
+            sign['sign_id'] = 'sign_B_{}'.format(id_b)
+            id_b += 1
+        else:
+            print('illegal pic id: {} in json file: {}'.format(sign['pic_id'],
+                                                               filename))
+    return anno
+
+
+def save_result(res_final, output_path, detect_path):
+    anno_files = glob.glob(os.path.join(detect_path, '*.json'))
     for i, anno_file in enumerate(anno_files):
         anno = json.load(open(anno_file))
+        anno = generate_sign_id(anno, anno_file)
         signs = anno['signs']
         res = res_final[i]
         match_list = []
         for j, match_pair in enumerate(res):
             match_pair = list(match_pair)
+            if 'sign_id' not in signs[match_pair[0]]:
+                continue
+            if len(match_pair) > 1 and 'sign_id' not in signs[match_pair[1]]:
+                continue
             sign_id = signs[match_pair[0]]['sign_id']
             match_list.append({'sign_id': sign_id})
             if len(match_pair) > 1:
                 match_sign_id = signs[match_pair[1]]['sign_id']
             else:
                 match_sign_id = " "
-            match_list[j].update({'match_sign_id': match_sign_id})
+            match_list[-1].update({'match_sign_id': match_sign_id})
         anno.update({'match': match_list})
         file_name = os.path.split(anno_file)[1]
         result_file = os.path.join(output_path, file_name)
@@ -262,6 +284,7 @@ def load_pretrain(prog, pretrained_model):
     # ignore the parameter which mismatch the shape 
     # between the model and pretrain weight.
     all_var_shape = {}
+    all_var_name = set()
     for block in prog.blocks:
         for param in block.all_parameters():
             all_var_shape[param.name] = param.shape
@@ -269,10 +292,12 @@ def load_pretrain(prog, pretrained_model):
         name for name, shape in all_var_shape.items()
         if name in state and shape != state[name].shape
     ])
-
     if len(ignore_set) > 0:
         for k in ignore_set:
             if k in state:
                 print('warning: variable {} not used'.format(k))
                 del state[k]
+    for k in state.keys():
+        if k not in all_var_shape:
+            del state[k]
     fluid.io.set_program_state(prog, state)

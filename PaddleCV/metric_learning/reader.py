@@ -24,7 +24,7 @@ import paddle
 from imgtool import process_image
 import glob
 import json
-
+import signal
 random.seed(0)
 
 
@@ -41,10 +41,16 @@ def sign2dict(signs, pic_path):
     return sign_dict
 
 
-def init_sign(mode, path):
+def init_sign(mode, path, detect_path=None):
     data_list = os.path.join(path, mode)
-    pic_path = os.path.join(path, 'pic')
-    anno_path = os.path.join(data_list, 'json')
+    pic_path = os.path.join(data_list, 'pic')
+    if detect_path is None:
+        tag_path = os.path.join(path, 'tag')
+        anno_path = os.path.join(tag_path, mode)
+    else:
+        anno_path = detect_path
+    assert os.path.exists(
+        anno_path), 'Annotation path: {} does not exist'.format(anno_path)
 
     if mode == 'train':
         anno_files = glob.glob(os.path.join(anno_path, '*.json'))
@@ -63,12 +69,12 @@ def init_sign(mode, path):
                 sign = pair['sign_id']
                 match_sign = pair['match_sign_id']
                 if 'sign' in sign and sign not in sign_dict.keys():
-                    print('Illegal sign: {} in {} and ignore it'.format(
-                        sign, anno_file))
+                    print('Illegal H or W in sign: {} in {} and ignore it'.
+                          format(sign, anno_file))
                     continue
                 if 'sign' in match_sign and match_sign not in sign_dict.keys():
-                    print('Illegal sign: {} in {} and ignore it'.format(
-                        match_sign, anno_file))
+                    print('Illegal H or W in sign: {} in {} and ignore it'.
+                          format(match_sign, anno_file))
                     continue
 
                 if sign in sign_cls.keys():
@@ -87,11 +93,11 @@ def init_sign(mode, path):
                         anno_data[cls_id].append(sign_dict[match_sign])
                         sign_cls[match_sign] = cls_id
                     cls_id += 1
-        print('total class num: {}'.format(cls_id))
+        print('total matched class number: {}'.format(cls_id))
         for cls, anno in enumerate(anno_data):
             for sign in anno:
                 anno_list.append((sign, cls))
-        print('total instance num: {}'.format(len(anno_list)))
+        print('total instance number: {}'.format(len(anno_list)))
         return anno_data, anno_list
 
     else:
@@ -100,6 +106,8 @@ def init_sign(mode, path):
         sign_list = []
         for anno_file in anno_files:
             anno = json.load(open(anno_file))
+            assert 'signs' in anno, "'signs' is not in json file: {}, please check path or obtain detection result at first.".format(
+                anno_file)
             signs = anno['signs']
             group = anno['group']
             # seq_id: 0 stands for A and 1 stands for B
@@ -190,8 +198,7 @@ def image_iterator(data):
 def createreader(settings, mode):
     def metric_reader():
         if mode == 'train':
-            train_data, train_image_list = init_sign(mode,
-                                                     settings.train_data_path)
+            train_data, train_image_list = init_sign(mode, settings.data_path)
             loss_name = settings.loss_name
             if loss_name in ["softmax", "arcmargin"]:
                 return arcmargin_iterator(train_image_list, settings)()
@@ -202,7 +209,8 @@ def createreader(settings, mode):
                     "Invalid loss name: {}. You should use softmax, arcmargin, triplet".
                     format(loss_name))
         else:
-            sign_list = init_sign(mode, settings.test_data_path)
+            sign_list = init_sign(mode, settings.data_path,
+                                  settings.detect_path)
             return image_iterator(sign_list)()
 
     image_shape = settings.image_shape.split(',')
@@ -214,6 +222,10 @@ def createreader(settings, mode):
         color_jitter=False,
         rotate=False,
         crop_size=image_size)
+
+    #reader = paddle.reader.map_readers(
+    #    image_mapper, metric_reader)
+    # multi-thread reader
     reader = paddle.reader.xmap_readers(
         image_mapper, metric_reader, 8, 1000, order=True)
     return reader

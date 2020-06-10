@@ -38,10 +38,11 @@ add_arg('batch_size', int, 10, "Minibatch size.")
 add_arg('image_shape', str, "3,64,64", "Input image size.")
 add_arg('use_gpu', bool, True, "Whether to use GPU or not.")
 add_arg('pretrained_model', str, None, "Whether to use pretrained model.")
-add_arg('test_data_path', str, "./data/", "path of validation data or test data")
-add_arg('thresh', float, 0.8, "threshold for similarity distance")
-add_arg('top_k', int, 10, "the number of images to match")
-add_arg('output_path', str, "./json_output", "path for saving json result")
+add_arg('data_path', str, "./data/", "path of validation data or test data")
+add_arg('thresh', float, 0.5, "threshold for similarity distance")
+add_arg('top_k', int, 20, "the number of images to match")
+add_arg('output_path', str, "./output/result", "path for saving json result")
+add_arg('detect_path', str, "./output/detect", "path of detection result")
 # yapf: enable
 
 model_list = [m for m in dir(models) if "__" not in m]
@@ -118,7 +119,7 @@ def eval(args):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     print("Saving result to {}".format(output_path))
-    save_result(res_final, args.test_data_path, output_path)
+    save_result(res_final, output_path, args.detect_path)
     sys.stdout.flush()
 
 
